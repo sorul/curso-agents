@@ -9,6 +9,22 @@ from dotenv import load_dotenv
 from sendgrid.helpers.mail import Content, Email, Mail, To
 
 
+"""
+Pipeline de SDR automatizado con OpenAI Agents.
+
+Secuencia del flujo:
+1. Se crean tres agentes de ventas con estilos distintos.
+2. Los tres agentes generan candidatos de email en paralelo.
+3. Un manager recibe los tres candidatos y elige el mejor.
+4. Un agente de email crea el asunto, convierte el cuerpo a HTML y lo envía.
+
+La orquestación importante se hace en Python para controlar qué partes se
+paralelizan. Solo se paraleliza la generación de candidatos, porque son tareas
+independientes. La selección y el envío se hacen en orden para evitar múltiples
+handoffs o envíos duplicados.
+"""
+
+
 MODEL = "gpt-4o-mini"
 FROM_EMAIL = "cromerovargas2d@gmail.com"
 TO_EMAIL = "cromerovargas2d@gmail.com"
@@ -17,12 +33,16 @@ MESSAGE = "Envía un correo electrónico de ventas en frío dirigido a 'Estimado
 
 @dataclass(frozen=True)
 class SalesCandidate:
+    """Email candidato generado por uno de los agentes de ventas."""
+
     agent_name: str
     email_body: str
 
 
 @dataclass(frozen=True)
 class SDRPipeline:
+    """Agrupa los agentes que participan en el flujo completo."""
+
     sales_agents: List[Agent]
     sales_manager: Agent
     emailer_agent: Agent
@@ -30,7 +50,13 @@ class SDRPipeline:
 
 @function_tool
 def send_html_email(subject: str, html_body: str) -> Dict[str, str]:
-    """Envía un correo electrónico con el asunto y el cuerpo HTML."""
+    """
+    Tool usada por el Email Manager para enviar el correo final.
+
+    El decorador @function_tool permite que un Agent invoque esta función como
+    herramienta. La función espera recibir ya el asunto y el HTML definitivos.
+    """
+
     api_key = os.environ.get("SENDGRID_API_KEY")
     if not api_key:
         raise ValueError("SENDGRID_API_KEY no está configurada")
@@ -43,6 +69,8 @@ def send_html_email(subject: str, html_body: str) -> Dict[str, str]:
 
 
 def create_subject_writer() -> Agent:
+    """Crea el agente especializado en generar asuntos de email."""
+
     return Agent(
         name="Escritor de asunto de correo electrónico",
         instructions=(
@@ -55,6 +83,8 @@ def create_subject_writer() -> Agent:
 
 
 def create_html_converter() -> Agent:
+    """Crea el agente especializado en convertir texto o markdown a HTML."""
+
     return Agent(
         name="Conversor de cuerpo de correo electrónico HTML",
         instructions=(
@@ -68,6 +98,18 @@ def create_html_converter() -> Agent:
 
 
 def create_emailer_agent() -> Agent:
+    """
+    Crea el agente responsable de preparar y enviar el email elegido.
+
+    Este agente tiene tres tools:
+    - subject_writer: genera el asunto.
+    - html_converter: convierte el cuerpo a HTML.
+    - send_html_email: envía el email real por SendGrid.
+
+    Aquí desactivamos parallel_tool_calls para forzar una secuencia segura:
+    asunto -> HTML -> envío.
+    """
+
     subject_tool = create_subject_writer().as_tool(
         tool_name="subject_writer",
         tool_description="Escribe un asunto para un correo electrónico de ventas en frío",
@@ -94,6 +136,13 @@ def create_emailer_agent() -> Agent:
 
 
 def create_sales_agents() -> List[Agent]:
+    """
+    Crea los tres agentes que proponen emails en estilos distintos.
+
+    Estos agentes no envían nada. Solo generan propuestas de cuerpo de email.
+    Por eso se pueden ejecutar en paralelo sin riesgo de duplicar envíos.
+    """
+
     agent_configs = [
         (
             "Agente de ventas profesional",
@@ -126,6 +175,13 @@ def create_sales_agents() -> List[Agent]:
 
 
 def create_sales_manager() -> Agent:
+    """
+    Crea el agente que selecciona el mejor candidato.
+
+    Este manager no tiene tools ni handoffs. Su única responsabilidad es
+    decidir cuál de los tres textos es mejor y devolver el cuerpo definitivo.
+    """
+
     return Agent(
         name="Manager de ventas",
         instructions=(
@@ -140,6 +196,8 @@ def create_sales_manager() -> Agent:
 
 
 def create_pipeline() -> SDRPipeline:
+    """Construye todos los agentes del pipeline en un único objeto."""
+
     return SDRPipeline(
         sales_agents=create_sales_agents(),
         sales_manager=create_sales_manager(),
@@ -148,16 +206,27 @@ def create_pipeline() -> SDRPipeline:
 
 
 async def generate_candidate(agent: Agent, message: str) -> SalesCandidate:
+    """Ejecuta un agente de ventas y empaqueta su salida como candidato."""
+
     result = await Runner.run(agent, message)
     return SalesCandidate(agent_name=agent.name, email_body=str(result.final_output))
 
 
 async def generate_candidates(agents: List[Agent], message: str) -> List[SalesCandidate]:
+    """
+    Genera todos los candidatos en paralelo.
+
+    Esta es la única parte paralelizada del flujo. Cada agente trabaja con el
+    mismo briefing y produce una propuesta independiente.
+    """
+
     tasks = [generate_candidate(agent, message) for agent in agents]
     return await asyncio.gather(*tasks)
 
 
 def build_selection_prompt(message: str, candidates: List[SalesCandidate]) -> str:
+    """Construye el prompt que recibirá el manager para elegir el mejor email."""
+
     formatted_candidates = "\n\n".join(
         f"## {candidate.agent_name}\n{candidate.email_body}"
         for candidate in candidates
@@ -174,12 +243,22 @@ async def select_best_email(
     message: str,
     candidates: List[SalesCandidate],
 ) -> str:
+    """Pide al manager que elija uno de los candidatos generados."""
+
     prompt = build_selection_prompt(message, candidates)
     result = await Runner.run(sales_manager, prompt)
     return str(result.final_output)
 
 
 async def send_selected_email(emailer_agent: Agent, email_body: str):
+    """
+    Pide al Email Manager que prepare y envíe el email elegido.
+
+    Llegados a este punto ya hay un único cuerpo de email. El envío se mantiene
+    separado de la selección para que la operación con efectos externos ocurra
+    una sola vez.
+    """
+
     prompt = (
         "Envía el siguiente correo electrónico de ventas en frío. "
         "No lo reescribas; solo crea un asunto, conviértelo a HTML y envíalo.\n\n"
@@ -189,20 +268,38 @@ async def send_selected_email(emailer_agent: Agent, email_body: str):
 
 
 async def run_pipeline(message: str = MESSAGE):
+    """
+    Ejecuta el flujo completo.
+
+    Orden real de ejecución:
+    1. Carga variables de entorno.
+    2. Crea los agentes.
+    3. Genera tres candidatos en paralelo.
+    4. Selecciona el mejor candidato.
+    5. Envía el candidato seleccionado.
+    """
+
     load_dotenv(override=True)
     pipeline = create_pipeline()
 
     with trace("Automated SDR"):
+        # Paralelo: tres propuestas independientes.
         candidates = await generate_candidates(pipeline.sales_agents, message)
+
+        # Secuencial: una única decisión sobre los candidatos.
         selected_email = await select_best_email(
             pipeline.sales_manager,
             message,
             candidates,
         )
+
+        # Secuencial: una única operación externa de envío.
         return await send_selected_email(pipeline.emailer_agent, selected_email)
 
 
 async def main():
+    """Punto de entrada async para ejecutar el script desde terminal."""
+
     result = await run_pipeline()
     print(result.final_output)
 
