@@ -34,7 +34,7 @@ class ResearchManager:
             search_plan = await self.plan_searches(research_brief)
             yield "Búsquedas planificadas, iniciando búsqueda..."
 
-            # search_agent.py
+            # search_agent.py (se puede paralelizar cada búsqueda)
             search_results = await self.perform_searches(search_plan)
             yield "Búsquedas completas, escribiendo informe..."
 

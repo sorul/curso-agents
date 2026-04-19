@@ -34,8 +34,6 @@ with gr.Blocks() as ui:
         lines=8,
         placeholder="1. ...\n2. ...\n3. ...",
     )
-    run_button = gr.Button("Ejecutar investigación", variant="primary")
-    report = gr.Markdown(label="Informe")
 
     generate_questions_button.click(
         fn=generate_questions,
@@ -47,6 +45,9 @@ with gr.Blocks() as ui:
         inputs=query_textbox,
         outputs=clarifying_questions,
     )
+
+    run_button = gr.Button("Ejecutar investigación", variant="primary")
+    report = gr.Markdown(label="Informe")
     run_button.click(
         fn=run,
         inputs=[query_textbox, clarification_answers_textbox],
