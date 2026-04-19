@@ -3,9 +3,11 @@ from agents import Agent
 
 HOW_MANY_SEARCHES = 3
 
-INSTRUCTIONS = f"Eres un asistente de investigación útil. Dado un término de búsqueda, \
-produce un conjunto de búsquedas web para realizar para responder la consulta. \
-Salida: {HOW_MANY_SEARCHES} términos para consultar."
+INSTRUCTIONS = f"""Eres un asistente de investigación útil. Recibirás un brief con una consulta inicial
+y aclaraciones del usuario. Produce un conjunto de búsquedas web para responder la consulta respetando
+el objetivo, alcance, restricciones y preferencias indicadas.
+
+Salida: {HOW_MANY_SEARCHES} términos para consultar."""
 
 
 class WebSearchItem(BaseModel):

@@ -1,4 +1,5 @@
 from agents import Runner, trace, gen_trace_id
+from clarifier_agent import clarifier_agent, ClarifyingQuestions
 from search_agent import search_agent
 from planner_agent import planner_agent, WebSearchItem, WebSearchPlan
 from writer_agent import writer_agent, ReportData
@@ -8,7 +9,16 @@ import asyncio
 
 class ResearchManager:
 
-    async def run(self, query: str):
+    async def clarify_query(self, query: str) -> ClarifyingQuestions:
+        """ Genera preguntas de aclaración antes de planificar la investigación """
+        print("Generando preguntas de aclaración...")
+        result = await Runner.run(
+            clarifier_agent,
+            f"Consulta inicial: {query}",
+        )
+        return result.final_output_as(ClarifyingQuestions)
+
+    async def run(self, query: str, clarification_answers: str):
         """ Ejecuta el proceso de investigación profunda, generando los actualizaciones de estado y el informe final """
         trace_id = gen_trace_id()
         with trace("Ingestigación", trace_id=trace_id):
@@ -18,9 +28,10 @@ class ResearchManager:
             yield f"Ver traza: https://platform.openai.com/traces/trace?trace_id={trace_id}"
 
             print("Iniciando investigación...")
+            research_brief = self.build_research_brief(query, clarification_answers)
 
             # planner_agent.py
-            search_plan = await self.plan_searches(query)
+            search_plan = await self.plan_searches(research_brief)
             yield "Búsquedas planificadas, iniciando búsqueda..."
 
             # search_agent.py
@@ -28,7 +39,7 @@ class ResearchManager:
             yield "Búsquedas completas, escribiendo informe..."
 
             # writer_agent.py
-            report = await self.write_report(query, search_results)
+            report = await self.write_report(research_brief, search_results)
             yield "Informe escrito, enviando correo electrónico..."
 
             # email_agent.py
@@ -37,12 +48,22 @@ class ResearchManager:
 
             yield report.markdown_report
 
-    async def plan_searches(self, query: str) -> WebSearchPlan:
+    def build_research_brief(self, query: str, clarification_answers: str) -> str:
+        """ Construye el contexto que usarán los agentes posteriores """
+        answers = clarification_answers.strip() or "El usuario no proporcionó aclaraciones adicionales."
+        return f"""Consulta inicial:
+{query}
+
+Aclaraciones del usuario:
+{answers}
+"""
+
+    async def plan_searches(self, research_brief: str) -> WebSearchPlan:
         """ Planifica las búsquedas a realizar para la consulta """
         print("Planificando búsquedas...")
         result = await Runner.run(
             planner_agent,
-            f"Consulta: {query}",
+            f"Brief de investigación:\n{research_brief}",
         )
         print(f"Se realizarán {len(result.final_output.searches)} búsquedas")
         return result.final_output_as(WebSearchPlan)
@@ -77,11 +98,11 @@ class ResearchManager:
         except Exception:
             return None
 
-    async def write_report(self, query: str,
+    async def write_report(self, research_brief: str,
                            search_results: list[str]) -> ReportData:
         """ Escribe el informe para la consulta """
         print("Pensando en el informe...")
-        user_prompt = f"Consulta original: {query}\nResultados de búsqueda resumidos: {search_results}"
+        user_prompt = f"Brief de investigación: {research_brief}\nResultados de búsqueda resumidos: {search_results}"
         result = await Runner.run(
             writer_agent,
             user_prompt,
